@@ -4,7 +4,6 @@ import numpy as np
 import cv2
 import rospy
 
-from line_fit import line_fit, tune_fit, bird_fit, final_viz
 from Line import Line
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
@@ -100,154 +99,106 @@ def combinedBinaryImage(img):
         return finalBinaryImage
 
 def perspective_transform(img, verbose=False):
-        """
-        Get bird's eye view from input image
-        """
-        #1. Visually determine 4 source points and 4 destination points
-        #2. Get M, the transform matrix, and Minv, the inverse using cv2.getPerspectiveTransform()
-        #3. Generate warped image in bird view using cv2.warpPerspective()
+		"""
+		Get bird's eye view from input image
+		"""
+		#1. Visually determine 4 source points and 4 destination points
+		#2. Get M, the transform matrix, and Minv, the inverse using cv2.getPerspectiveTransform()
+		#3. Generate warped image in bird view using cv2.warpPerspective()
 
-        ## TODO
-        print(img.shape)
-        original_pts = np.float32([[0, 190], [0, 480], [640, 480], [640, 190]])
-        output_pts = np.float32([[0, 50],
-                                [0, 1000],
-                                [1200, 1000],
-                                [1200, 0]])
-        tM = cv2.getPerspectiveTransform(original_pts,output_pts)
-        warped_img = cv2.warpPerspective(np.float32(img),tM,(640, 480),flags=cv2.INTER_LINEAR)
-		
-        ####
+		## TODO
+		shape = img.shape
+		print(shape[0])
+		print(shape[1])
+		original_pts = np.float32([[200, 290], [160, 480], [480, 480], [440, 290]])
+		output_pts = np.float32([[0, 0],[285, 480],[355, 480],[500, 0]])
+		M = cv2.getPerspectiveTransform(original_pts,output_pts)
+		Minv = cv2.getPerspectiveTransform(output_pts,original_pts)
+		warped_img = cv2.warpPerspective(np.float32(img),M,(640, 480),flags=cv2.INTER_LINEAR)
 
-        return img, img, np.linalg.inv(img)
-
-def line_fit(binary_warped):
-	"""
-	Find and fit lane lines
-	"""
-	# Assuming you have created a warped binary image called "binary_warped"
-	# Take a histogram of the bottom half of the image
-	histogram = np.sum(binary_warped[binary_warped.shape[0]//2:,:], axis=0)
-	# Create an output image to draw on and visualize the result
-	out_img = (np.dstack((binary_warped, binary_warped, binary_warped))*255).astype('uint8')
-	# Find the peak of the left and right halves of the histogram
-	# These will be the starting point for the left and right lines
-	midpoint = int(histogram.shape[0]/2)
-	leftx_base = np.argmax(histogram[100:midpoint]) + 100
-	rightx_base = np.argmax(histogram[midpoint:-100]) + midpoint
-
-	# Choose the number of sliding windows
-	nwindows = 9
-	# Set height of windows
-	window_height = int(binary_warped.shape[0]/nwindows)
-	# Identify the x and y positions of all nonzero pixels in the image
-	nonzero = binary_warped.nonzero()
-	
-	nonzeroy = np.array(nonzero[0])
-	print(nonzeroy)
-	nonzerox = np.array(nonzero[1])
-	print(nonzerox)
-	combined = list(zip(nonzerox, nonzeroy))
-	# Current positions to be updated for each window
-	leftx_current = leftx_base
-	rightx_current = rightx_base
-	# Set the width of the windows +/- margin
-	margin = 100
-	# Set minimum number of pixels found to recenter window
-	minpix = 50
-	# Create empty lists to receive left and right lane pixel indices
-	left_lane_inds = []
-	right_lane_inds = []
-
-	# Step through the windows one by one
-	for window in range(nwindows):
-		# Identify window boundaries in x and y (and right and left)
-		##TO DO
-		x = window_height*window
-		y = window_height*(window + 1)
-		left_one = leftx_base
-		right_zero = rightx_base
-		left_zero = left_one - margin
-		right_one = right_zero + margin
 		####
-		# Draw the windows on the visualization image using cv2.rectangle()
-		##TO DO
-		left_top_left = (left_zero, x)
-		left_bottom_right = (left_one, y)
-		color = (255, 0, 0)
-		thickness = 2
-		out_img = cv2.rectangle(out_img, left_top_left, left_bottom_right, color, thickness)
-		right_top_left = (right_zero, x)
-		right_bottom_right = (right_one, y)
-		out_img = cv2.rectangle(out_img, right_top_left, right_bottom_right, color, thickness)
-		####
-		# Identify the nonzero pixels in x and y within the window
-		##TO DO
-		# middle = (right - left) / 2
-		# nonzero_window_left = nonzero[x:y, left:middle]
-		# nonzero_window_right = nonzero[x:y, middle:right]
-		# left_lane = []
-		# right_lane = []
-	
-		# for row in range (x, y) :
-		# 	for col in range (left, right) :
-		# 		if (row, col) in combined:
-		# 			if (col < middle) :
-		# 				left_lane.append((row, col))
-		# 			else :
-		# 				right_lane_inds.append((row, col))
-		####
-		# Append these indices to the lists
-		##TO DO
-		# left_lane_inds.append(left_lane)
-		# right_lane_inds.append(right_lane)
-		####
-		# If you found > minpix pixels, recenter next window on their mean position
-		##TO DO
-		# foundpix = len(left_lane) + len(right_lane)
-		# if (foundpix > minpix) :
-		# 	midpoint = middle
-		# 	leftx_base = np.argmax(histogram[100:midpoint]) + 100
-		# 	rightx_base = np.argmax(histogram[midpoint:-100]) + midpoint
-		####
-		# pass
+		return warped_img, M, Minv
 
-	# Concatenate the arrays of indices
-	return out_img
-	left_lane_inds = np.concatenate(left_lane_inds)
-	right_lane_inds = np.concatenate(right_lane_inds)
+def centerline_fit_with_visualization(binary_warped):
+    """
+    Detect and fit the centerline in the given binary warped image with visualization overlayed.
+    """
+    # Sum along columns to get the horizontal projection of the centerline
+    histogram = np.sum(binary_warped, axis=0)
+    
+    # Find the x-position of the maximum value in the histogram (centerline position)
+    center_x = np.argmax(histogram)
+    
+    # Create a visualization image
+    out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
+    
+    # Get non-zero pixel coordinates
+    nonzero = binary_warped.nonzero()
+    nonzeroy = np.array(nonzero[0])
+    nonzerox = np.array(nonzero[1])
+    
+    # Define the sliding window parameters
+    nwindows = 9
+    margin = 50
+    minpix = 50
+    window_height = binary_warped.shape[0] // nwindows
+    
+    # Current position of the centerline
+    current_x = center_x
+    
+    # Create a list to store indices of detected pixels
+    centerline_inds = []
 
-	# Extract left and right line pixel positions
-	leftx = nonzerox[left_lane_inds]
-	lefty = nonzeroy[left_lane_inds]
-	rightx = nonzerox[right_lane_inds]
-	righty = nonzeroy[right_lane_inds]
+    # Loop through each window
+    for window in range(nwindows):
+        # Define the boundaries of the current window
+        win_y_low = binary_warped.shape[0] - (window + 1) * window_height
+        win_y_high = binary_warped.shape[0] - window * window_height
+        win_x_low = current_x - margin
+        win_x_high = current_x + margin
 
-	# Fit a second order polynomial to each using np.polyfit()
-	# If there isn't a good fit, meaning any of leftx, lefty, rightx, and righty are empty,
-	# the second order polynomial is unable to be sovled.
-	# Thus, it is unable to detect edges.
-	try:
-	##TODO
-		left_fit = np.polyfit(leftx, lefty, 2)
-		right_fit = np.polyfit(rightx, righty, 2)
-	####
-	except TypeError:
-		print("Unable to detect lanes")
-		return out_img
+        # Draw the window on the visualization image
+        cv2.rectangle(out_img, (win_x_low, win_y_low), (win_x_high, win_y_high), (0, 255, 0), 2)
 
+        # Identify the non-zero pixels within the window
+        good_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
+                     (nonzerox >= win_x_low) & (nonzerox < win_x_high)).nonzero()[0]
+        
+        # Append these indices to the list
+        centerline_inds.append(good_inds)
 
-	# Return a dict of relevant variables
-	ret = {}
-	ret['left_fit'] = left_fit
-	ret['right_fit'] = right_fit
-	ret['nonzerox'] = nonzerox
-	ret['nonzeroy'] = nonzeroy
-	ret['out_img'] = out_img
-	ret['left_lane_inds'] = left_lane_inds
-	ret['right_lane_inds'] = right_lane_inds
+        # If the number of pixels found is greater than minpix, recenter the next window
+        if len(good_inds) > minpix:
+            current_x = int(np.mean(nonzerox[good_inds]))
 
-	return ret
+    # Concatenate the pixel indices
+    centerline_inds = np.concatenate(centerline_inds)
+
+    # Extract the pixel positions
+    centerx = nonzerox[centerline_inds]
+    centery = nonzeroy[centerline_inds]
+
+    # Fit a second-order polynomial (if enough points are detected)
+    if len(centerx) > 0:
+        center_fit = np.polyfit(centery, centerx, 2)
+    else:
+        center_fit = None
+
+    # Generate x and y values for plotting
+    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0])
+    if center_fit is not None:
+        center_fitx = center_fit[0]*ploty**2 + center_fit[1]*ploty + center_fit[2]
+    else:
+        center_fitx = np.zeros_like(ploty)
+
+    # Draw the fitted line onto the visualization image
+    for i in range(len(ploty) - 1):
+        cv2.line(out_img, 
+                 (int(center_fitx[i]), int(ploty[i])), 
+                 (int(center_fitx[i+1]), int(ploty[i+1])), 
+                 (255, 0, 255), 5)
+
+    return out_img
 
 def main():
 	img = cv2.imread('test.png')
@@ -274,9 +225,9 @@ def main():
 	# # warped, M2, M2inv = perspective_transform(img)
 	# # cv2.imwrite('./warped.png', warped)
 	# output = line_fit(binary_warped)
+	final = centerline_fit_with_visualization(binary_warped)
 
-
-	cv2.imwrite('./lanefitting.png', binary_warped)
+	cv2.imwrite('./lanefitting.png', final)
 
 if __name__ == "__main__":
 	main()
