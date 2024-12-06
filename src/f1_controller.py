@@ -1,37 +1,31 @@
 import rospy
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Float32MultiArray
 import math
 
 class F1TenthController:
-
     def __init__(self):
         rospy.init_node('f1tenth_controller', anonymous=True)
         self.control_pub = rospy.Publisher('/drive', AckermannDriveStamped, queue_size=1)
+
+        # Subscribe to the odometry and waypoints topics
         rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        rospy.Subscriber('/perception/waypoints', Float32MultiArray, self.waypoints_callback)
+
         self.current_state = None
-        self.L = 0.33  # Wheelbase for F1TENTH (approximate value)
+        self.L = 0.33  # Wheelbase for F1TENTH
+        self.waypoints = []  # To store received waypoints
 
-    def odom_callback(self, data):
-        self.current_state = data
+    def waypoints_callback(self, msg):
+        """
+        Callback to handle incoming waypoints from the perception system.
 
-    def extract_vehicle_info(self):
-        if self.current_state is None:
-            return None, None, None, None
-        position = self.current_state.pose.pose
-        orientation = position.orientation
-        x = position.position.x
-        y = position.position.y
-
-        # Convert quaternion to yaw
-        siny_cosp = 2.0 * (orientation.w * orientation.z + orientation.x * orientation.y)
-        cosy_cosp = 1.0 - 2.0 * (orientation.y**2 + orientation.z**2)
-        yaw = math.atan2(siny_cosp, cosy_cosp)
-
-        linear = self.current_state.twist.twist.linear
-        vel = math.sqrt(linear.x**2 + linear.y**2)
-
-        return x, y, vel, yaw
+        Args:
+            msg (Float32MultiArray): List of waypoints [x1, y1, x2, y2, ...].
+        """
+        # Convert the flat array into a list of (x, y) waypoints
+        self.waypoints = [(msg.data[i], msg.data[i+1]) for i in range(0, len(msg.data), 2)]
 
     def pure_pursuit_lateral_control(self, waypoints):
         """
@@ -75,19 +69,17 @@ class F1TenthController:
         max_velocity = 0.5  # Example max velocity
         return max_velocity  # Simplified constant velocity
 
-    def execute(self, waypoints):
+    def execute(self):
         """
-        Compute and publish control commands based on perception-generated waypoints.
-
-        Args:
-            waypoints: List of local waypoints [(x1, y1), (x2, y2), ...].
+        Compute and publish control commands based on received waypoints.
         """
-        if not waypoints or len(waypoints) < 2:
-            rospy.logwarn("Not enough waypoints to compute control!")
+        if not self.waypoints or len(self.waypoints) < 2:
+            rospy.logwarn("No waypoints received or insufficient waypoints!")
+            self.stop()
             return
 
         # Compute steering angle using pure pursuit
-        steering_angle = self.pure_pursuit_lateral_control(waypoints)
+        steering_angle = self.pure_pursuit_lateral_control(self.waypoints)
 
         # Set constant velocity (e.g., 1 m/s)
         velocity = 1.0
@@ -97,6 +89,7 @@ class F1TenthController:
         drive_msg.drive.steering_angle = steering_angle
         drive_msg.drive.speed = velocity
         self.control_pub.publish(drive_msg)
+
 
 
     def stop(self):
