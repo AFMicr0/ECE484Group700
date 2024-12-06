@@ -180,11 +180,59 @@ class lanenet_detector():
         BinaryImage = self.combinedBinaryImage(img)
         img_birdeye, M, Minv = self.perspective_transform(BinaryImage)
         overlay = centerline_fit_with_visualization(img_birdeye)
+        center_fit = self.extract_center_fit(img_birdeye)
         img1 = cv2.convertScaleAbs(BinaryImage, alpha=(255.0/np.max(img)))
         img2 = cv2.convertScaleAbs(overlay, alpha=(255.0/np.max(img)))
 
-        return img1, img2
+        return img1, img2, center_fit
 
+    def extract_center_fit(self, binary_image):
+        """
+        Extract the centerline polynomial from the binary warped image.
+        """
+        histogram = np.sum(binary_image, axis=0)
+        center_x = np.argmax(histogram)
+        nonzero = binary_image.nonzero()
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+
+        if len(nonzeroy) > 0:
+            center_fit = np.polyfit(nonzeroy, nonzerox, 2)
+        else:
+            center_fit = None
+
+        return center_fit
+    
+    def generate_waypoints(self, center_fit, num_points=10, spacing=0.5):
+        """
+        Generate local waypoints based on the fitted polynomial.
+
+        Args:
+            center_fit (np.array): Polynomial coefficients of the centerline.
+            num_points (int): Number of waypoints to generate.
+            spacing (float): Spacing between consecutive waypoints in meters.
+
+        Returns:
+            np.ndarray: Array of waypoints [[x1, y1], [x2, y2], ...].
+        """
+        ploty = np.linspace(0, num_points * spacing, num_points)
+
+        if center_fit is not None:
+            plotx = center_fit[0] * ploty**2 + center_fit[1] * ploty + center_fit[2]
+        else:
+            plotx = np.zeros_like(ploty)
+
+        waypoints = np.vstack((plotx, ploty)).T
+        return waypoints
+
+    def publish_waypoints(self, center_fit):
+        """
+        Publish generated waypoints to a ROS topic.
+        """
+        waypoints = self.generate_waypoints(center_fit)
+        msg = Float32MultiArray()
+        msg.data = waypoints.flatten()
+        self.pub_waypoints.publish(msg)
 
 if __name__ == '__main__':
     # init args
@@ -192,5 +240,3 @@ if __name__ == '__main__':
     lanenet_detector()
     while not rospy.core.is_shutdown():
         rospy.rostime.wallsleep(0.5)
-
-
