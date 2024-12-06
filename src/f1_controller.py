@@ -33,46 +33,71 @@ class F1TenthController:
 
         return x, y, vel, yaw
 
-    def pure_pursuit_lateral_control(self, curr_x, curr_y, curr_yaw, waypoints):
-        lookahead_distance = 1.0  # Adjust based on F1TENTH's speed
+    def pure_pursuit_lateral_control(self, waypoints):
+        """
+        Compute the steering angle using pure pursuit based on local waypoints.
+        
+        Args:
+            waypoints: List of waypoints in the vehicle's local frame [(x1, y1), (x2, y2), ...].
+
+        Returns:
+            float: Steering angle in radians.
+        """
+        if not waypoints:
+            self.stop()
+            return
+        
+        lookahead_distance = 1.0  # Lookahead distance, adjust based on vehicle dynamics
+        # lookahead_distance = 0.5 + 0.1 * velocity 
+        L = self.L  # Wheelbase of the vehicle
         target_point = None
 
+        # Find the lookahead point
         for point in waypoints:
-            distance = math.sqrt((point[0] - curr_x)**2 + (point[1] - curr_y)**2)
-            if distance > lookahead_distance:
+            distance = math.sqrt(point[0]**2 + point[1]**2)
+            if distance >= lookahead_distance:
                 target_point = point
                 break
 
+        # If no suitable lookahead point, use the last waypoint
         if target_point is None:
             target_point = waypoints[-1]
 
-        dx = target_point[0] - curr_x
-        dy = target_point[1] - curr_y
-        angle_to_point = math.atan2(dy, dx)
-        alpha = angle_to_point - curr_yaw
-        steering_angle = math.atan2(2 * self.L * math.sin(alpha), lookahead_distance)
+        # Compute the steering angle
+        x, y = target_point
+        alpha = math.atan2(y, x)  # Angle between vehicle's heading and target point
+        steering_angle = math.atan2(2 * L * math.sin(alpha), lookahead_distance)
 
         return steering_angle
+
 
     def longitudinal_control(self, current_velocity, waypoints):
         max_velocity = 0.5  # Example max velocity
         return max_velocity  # Simplified constant velocity
 
     def execute(self, waypoints):
-        curr_x, curr_y, curr_vel, curr_yaw = self.extract_vehicle_info()
+        """
+        Compute and publish control commands based on perception-generated waypoints.
 
-        if curr_x is None:
-            rospy.logwarn("Waiting for odometry data...")
+        Args:
+            waypoints: List of local waypoints [(x1, y1), (x2, y2), ...].
+        """
+        if not waypoints or len(waypoints) < 2:
+            rospy.logwarn("Not enough waypoints to compute control!")
             return
 
-        target_steering = self.pure_pursuit_lateral_control(curr_x, curr_y, curr_yaw, waypoints)
-        target_velocity = self.longitudinal_control(curr_vel, waypoints)
+        # Compute steering angle using pure pursuit
+        steering_angle = self.pure_pursuit_lateral_control(waypoints)
 
-        # Publish control command
+        # Set constant velocity (e.g., 1 m/s)
+        velocity = 1.0
+
+        # Publish control commands
         drive_msg = AckermannDriveStamped()
-        drive_msg.drive.steering_angle = target_steering
-        drive_msg.drive.speed = target_velocity
+        drive_msg.drive.steering_angle = steering_angle
+        drive_msg.drive.speed = velocity
         self.control_pub.publish(drive_msg)
+
 
     def stop(self):
         drive_msg = AckermannDriveStamped()
