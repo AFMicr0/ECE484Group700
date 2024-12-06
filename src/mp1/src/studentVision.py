@@ -223,6 +223,7 @@ class lanenet_detector():
             plotx = np.zeros_like(ploty)
 
         waypoints = np.vstack((plotx, ploty)).T
+        print(waypoints)
         return waypoints
 
     def publish_waypoints(self, center_fit):
