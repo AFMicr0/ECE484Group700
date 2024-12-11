@@ -51,7 +51,7 @@ def gradient_thresh(img, thresh_min=70, thresh_max=200):
 
         return binary_output
 
-def color_thresh(img, thresh=(20, 30)):
+def color_thresh(img, thresh=(14, 40)):
         """
         Convert RGB to HSL and threshold to binary image using S channel
         """
@@ -60,21 +60,20 @@ def color_thresh(img, thresh=(20, 30)):
         #Hint: threshold on H to remove green grass
         ## TODO
         hls_image = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
-
-        binary_output = np.zeros((img.shape[0], img.shape[1]))
-
-        for row in range(len(hls_image)):
-            for col in range(len(hls_image[0])):
-                lum = hls_image[row][col][2]
-                sat = hls_image[row][col][1]
-                hue = hls_image[row][col][0]
-                if hue <= thresh[1] and hue > thresh[0] and sat > 150 and lum >50:
-                    binary_output[row][col] = 255
-                else:
-                    binary_output[row][col] = 0
-        ####
-
+        
+        # Split the HLS channels for easier access
+        hue = hls_image[:, :, 0]
+        lum = hls_image[:, :, 1]
+        sat = hls_image[:, :, 2]
+        
+        # Create a binary mask based on the threshold conditions
+        binary_output = np.zeros_like(hue)
+        binary_output[
+            (hue > thresh[0]) & (hue <= thresh[1]) & 
+            (sat > 90) & (lum > 20)
+        ] = 255
         return binary_output
+
 def combinedBinaryImage(img):
         """
         Get combined binary image from color filter and sobel filter
@@ -93,7 +92,7 @@ def combinedBinaryImage(img):
         binaryImage = np.zeros_like(SobelOutput)
         binaryImage[(ColorOutput==255)] = 1
         # Remove noise from binary image
-        binaryImage = morphology.remove_small_objects(binaryImage.astype('bool'),min_size=5,connectivity=2)
+        binaryImage = morphology.remove_small_objects(binaryImage.astype('bool'),min_size=35,connectivity=2)
         finalBinaryImage = np.zeros_like(SobelOutput)
         finalBinaryImage[binaryImage ==1] = 255
         return finalBinaryImage
@@ -110,8 +109,8 @@ def perspective_transform(img, verbose=False):
 		shape = img.shape
 		print(shape[0])
 		print(shape[1])
-		original_pts = np.float32([[200, 290], [160, 480], [480, 480], [440, 290]])
-		output_pts = np.float32([[0, 0],[285, 480],[355, 480],[500, 0]])
+		original_pts = np.float32([[75, 285], [40, 480], [600, 480], [565, 285]])
+		output_pts = np.float32([[-15, -60],[280, 480],[400, 480],[595, -60]])
 		M = cv2.getPerspectiveTransform(original_pts,output_pts)
 		Minv = cv2.getPerspectiveTransform(output_pts,original_pts)
 		warped_img = cv2.warpPerspective(np.float32(img),M,(640, 480),flags=cv2.INTER_LINEAR)
@@ -119,10 +118,48 @@ def perspective_transform(img, verbose=False):
 		####
 		return warped_img, M, Minv
 
+def generate_waypoints(center_fit, num_points=10, spacing=0.5):
+    """
+    Generate local waypoints based on the fitted polynomial.
+
+    Args:
+        center_fit (np.array): Polynomial coefficients of the centerline.
+        num_points (int): Number of waypoints to generate.
+        spacing (float): Spacing between consecutive waypoints in meters.
+
+    Returns:
+        list: Array of waypoints [[x1, y1], [x2, y2], ...].
+    """
+    # Real-world scaling factors
+    pixels_per_meter_x = 21 / 0.057  # Horizontal scaling factor
+    pixels_per_meter_y = 21 / 0.057  # Vertical scaling factor
+
+    # Generate y values (in meters) spaced evenly
+    ploty = np.linspace(0, num_points * spacing, num_points) * pixels_per_meter_y  # Convert to pixels
+
+    if center_fit is not None:
+        # Generate corresponding x values (in pixels) using the polynomial
+        plotx = center_fit[0] * ploty**2 + center_fit[1] * ploty + center_fit[2]
+    else:
+        plotx = np.zeros_like(ploty)
+
+    # Convert waypoints to meters
+    waypoints = [(plotx[i] / pixels_per_meter_x, ploty[i] / pixels_per_meter_y) for i in range(len(ploty))]
+    return waypoints
+
+
 def centerline_fit_with_visualization(binary_warped):
     """
     Detect and fit the centerline in the given binary warped image with visualization overlayed.
+    Also overlays generated waypoints.
+
+    Args:
+        binary_warped (np.ndarray): Binary warped image of the lane.
+
+    Returns:
+        np.ndarray: Visualization image with centerline and waypoints.
     """
+    print("reached1")
     # Sum along columns to get the horizontal projection of the centerline
     histogram = np.sum(binary_warped, axis=0)
     
@@ -138,16 +175,17 @@ def centerline_fit_with_visualization(binary_warped):
     nonzerox = np.array(nonzero[1])
     
     # Define the sliding window parameters
-    nwindows = 9
-    margin = 50
+    nwindows = 16
+    margin = 100
     minpix = 50
     window_height = binary_warped.shape[0] // nwindows
     
     # Current position of the centerline
     current_x = center_x
     
-    # Create a list to store indices of detected pixels
-    centerline_inds = []
+    # Lists to store valid pixel positions for line fitting
+    valid_centerx = []
+    valid_centery = []
 
     # Loop through each window
     for window in range(nwindows):
@@ -164,23 +202,17 @@ def centerline_fit_with_visualization(binary_warped):
         good_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
                      (nonzerox >= win_x_low) & (nonzerox < win_x_high)).nonzero()[0]
         
-        # Append these indices to the list
-        centerline_inds.append(good_inds)
-
-        # If the number of pixels found is greater than minpix, recenter the next window
+        # If enough pixels are found, use them for line fitting
         if len(good_inds) > minpix:
+            valid_centerx.extend(nonzerox[good_inds])  # Collect x-coordinates
+            valid_centery.extend(nonzeroy[good_inds])  # Collect y-coordinates
+            
+            # Recenter the next window based on the mean x-position of pixels
             current_x = int(np.mean(nonzerox[good_inds]))
 
-    # Concatenate the pixel indices
-    centerline_inds = np.concatenate(centerline_inds)
-
-    # Extract the pixel positions
-    centerx = nonzerox[centerline_inds]
-    centery = nonzeroy[centerline_inds]
-
     # Fit a second-order polynomial (if enough points are detected)
-    if len(centerx) > 0:
-        center_fit = np.polyfit(centery, centerx, 2)
+    if len(valid_centerx) > 0:
+        center_fit = np.polyfit(valid_centery, valid_centerx, 2)
     else:
         center_fit = None
 
@@ -198,36 +230,46 @@ def centerline_fit_with_visualization(binary_warped):
                  (int(center_fitx[i+1]), int(ploty[i+1])), 
                  (255, 0, 255), 5)
 
+    # Generate waypoints and overlay them
+    waypoints = generate_waypoints(center_fit, num_points=10, spacing=0.5)
+    print("reached")
+    print(waypoints)
+    for waypoint in waypoints:
+        x, y = int(waypoint[0] * 21 / 0.057), int(waypoint[1] * 21 / 0.057)  # Convert back to pixels for visualization
+        cv2.circle(out_img, (x, y), radius=15, color=(0, 0, 255), thickness=-1)  # Red circles for waypoints
+
     return out_img
 
+
 def main():
-	img = cv2.imread('test.png')
-	binary = combinedBinaryImage(img)
-	# # print(np.float32(binary).sum())
-	# # print(binary.shape)
-	# # binary_visual = np.zeros(binary.shape)
-	# # for row in range(len(binary)):
-	# #	for col in range(len(binary[0])):
-	# #		if (binary[row][col] == 1) :
-	# #			# print("Value 1")
-	# #			binary_visual[row][col] = 255
-	# # print(binary_visual.sum())
-	binary_warped, M, Minv = perspective_transform(binary)
-	# # warped_visual = np.zeros(binary_warped.shape)
-	# # for row in range(len(binary)):
-	# # 	for col in range(len(binary[0])):
-	# # 		if (binary_warped[row][col] == 1) :
-	# # 			# print("Value 1")
-	# # 			warped_visual[row][col] = 255
-	# # print(warped_visual.sum())
-	# # cv2.imwrite('./binary_warped.png', np.float32(warped_visual))
+    img = cv2.imread('test.png')
+    binary = combinedBinaryImage(img)
+    # # print(np.float32(binary).sum())
+    # # print(binary.shape)
+    # # binary_visual = np.zeros(binary.shape)
+    # # for row in range(len(binary)):
+    # #	for col in range(len(binary[0])):
+    # #		if (binary[row][col] == 1) :
+    # #			# print("Value 1")
+    # #			binary_visual[row][col] = 255
+    # # print(binary_visual.sum())
+    binary_warped, M, Minv = perspective_transform(binary)
+    # # warped_visual = np.zeros(binary_warped.shape)
+    # # for row in range(len(binary)):
+    # # 	for col in range(len(binary[0])):
+    # # 		if (binary_warped[row][col] == 1) :
+    # # 			# print("Value 1")
+    # # 			warped_visual[row][col] = 255
+    # # print(warped_visual.sum())
+    # # cv2.imwrite('./binary_warped.png', np.float32(warped_visual))
 
-	# # warped, M2, M2inv = perspective_transform(img)
-	# # cv2.imwrite('./warped.png', warped)
-	# output = line_fit(binary_warped)
-	final = centerline_fit_with_visualization(binary_warped)
+    # # warped, M2, M2inv = perspective_transform(img)
+    # # cv2.imwrite('./warped.png', warped)
+    # output = line_fit(binary_warped)
+    final = centerline_fit_with_visualization(binary_warped)
+    print("did final")
 
-	cv2.imwrite('./lanefitting.png', final)
+    cv2.imwrite('./lanefittingrelative.png', final)
 
 if __name__ == "__main__":
 	main()

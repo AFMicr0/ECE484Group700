@@ -9,8 +9,9 @@ from Line import Line
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 from cv_bridge import CvBridge, CvBridgeError
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32MultiArray
 from skimage import morphology
+import matplotlib.pyplot as plt
 
 
 
@@ -25,6 +26,7 @@ class lanenet_detector():
         #self.sub_image = rospy.Subscriber('camera/image_raw', Image, self.img_callback, queue_size=1)
         self.pub_image = rospy.Publisher("lane_detection/annotate", Image, queue_size=1)
         self.pub_bird = rospy.Publisher("lane_detection/birdseye", Image, queue_size=1)
+        self.pub_waypoints = rospy.Publisher('/local_waypoints', Float32MultiArray, queue_size=1)
         self.left_line = Line(n=5)
         self.right_line = Line(n=5)
         self.detected = False
@@ -40,7 +42,7 @@ class lanenet_detector():
             print(e)
 
         raw_img = cv_image.copy()
-        mask_image, bird_image = self.detection(raw_img)
+        mask_image, bird_image, center_fit = self.detection(raw_img)
 
         if mask_image is not None and bird_image is not None:
             # Convert an OpenCV image into a ROS image message
@@ -50,6 +52,10 @@ class lanenet_detector():
             # Publish image message in ROS
             self.pub_image.publish(out_img_msg)
             self.pub_bird.publish(out_bird_msg)
+
+            if center_fit is not None:
+                self.publish_waypoints(center_fit)
+
 
 
     def gradient_thresh(self, img, thresh_min=25, thresh_max=100):
@@ -84,7 +90,7 @@ class lanenet_detector():
 
 
 
-    def color_thresh(self, img, thresh=(20, 30)):
+    def color_thresh(self, img, thresh=(14, 40)):
         """
         Convert RGB to HSL and threshold to binary image using S channel
         """
@@ -116,14 +122,14 @@ class lanenet_detector():
         
         # Split the HLS channels for easier access
         hue = hls_image[:, :, 0]
-        sat = hls_image[:, :, 1]
-        lum = hls_image[:, :, 2]
+        lum = hls_image[:, :, 1]
+        sat = hls_image[:, :, 2]
         
         # Create a binary mask based on the threshold conditions
         binary_output = np.zeros_like(hue)
         binary_output[
             (hue > thresh[0]) & (hue <= thresh[1]) & 
-            (sat > 150) & (lum > 50)
+            (sat > 90) & (lum > 20)
         ] = 255
         
         return binary_output
@@ -146,14 +152,16 @@ class lanenet_detector():
         
         ####
 
-        binaryImage = np.zeros_like(ColorOutput)
-        
-        binaryImage[(ColorOutput==255)|(SobelOutput==255)] = 255
+
+        binaryImage = np.zeros_like(SobelOutput)
+        binaryImage[(ColorOutput==255)] = 1
+        # Remove noise from binary image
+        binaryImage = morphology.remove_small_objects(binaryImage.astype('bool'),min_size=50,connectivity=2)
+        finalBinaryImage = np.zeros_like(SobelOutput)
+        finalBinaryImage[binaryImage ==1] = 255
+        return finalBinaryImage
         # Remove noise from binary image
         # binaryImage = morphology.remove_small_objects(binaryImage.astype('bool'),min_size=50,connectivity=2)
-
-        return ColorOutput
-
 
     def perspective_transform(self, img, verbose=False):
         """
@@ -165,8 +173,8 @@ class lanenet_detector():
 
         ## TODO
         shape = img.shape
-        original_pts = np.float32([[200, 290], [160, 480], [480, 480], [440, 290]])
-        output_pts = np.float32([[0, 0],[280, 480],[360, 480],[500, 0]])
+        original_pts = np.float32([[75, 285], [40, 480], [600, 480], [565, 285]])
+        output_pts = np.float32([[-15, -60],[280, 480],[400, 480],[595, -60]])
         M = cv2.getPerspectiveTransform(original_pts,output_pts)
         Minv = cv2.getPerspectiveTransform(output_pts,original_pts)
         warped_img = cv2.warpPerspective(np.float32(img),M,(640, 480),flags=cv2.INTER_LINEAR)
@@ -215,24 +223,41 @@ class lanenet_detector():
         Returns:
             np.ndarray: Array of waypoints [[x1, y1], [x2, y2], ...].
         """
-        ploty = np.linspace(0, num_points * spacing, num_points)
+        # Real-world scaling factors
+        pixels_per_meter_x = 21 / 0.057  # Horizontal scaling factor
+        pixels_per_meter_y = 21 / 0.057  # Vertical scaling factor
+
+        # Generate y values (in meters) spaced evenly
+        ploty = np.linspace(0, num_points * spacing, num_points) * pixels_per_meter_y  # Convert to pixels
 
         if center_fit is not None:
+            # Generate corresponding x values (in pixels) using the polynomial
             plotx = center_fit[0] * ploty**2 + center_fit[1] * ploty + center_fit[2]
         else:
             plotx = np.zeros_like(ploty)
 
-        waypoints = np.vstack((plotx, ploty)).T
-        print(waypoints)
+        # Convert waypoints to meters
+        waypoints = [(plotx[i] / pixels_per_meter_x, ploty[i] / pixels_per_meter_y) for i in range(len(ploty))]
         return waypoints
+
 
     def publish_waypoints(self, center_fit):
         """
         Publish generated waypoints to a ROS topic.
         """
         waypoints = self.generate_waypoints(center_fit)
+        print(waypoints)
+        
+        waypoints_array = np.array(waypoints)
+
+        # Flatten the waypoints array into a 1D array
+        flattened_waypoints = waypoints_array.flatten()
+
+        # Create and populate the Float32MultiArray message
         msg = Float32MultiArray()
-        msg.data = waypoints.flatten()
+        msg.data = flattened_waypoints
+
+        # Publish the waypoints
         self.pub_waypoints.publish(msg)
 
 if __name__ == '__main__':
