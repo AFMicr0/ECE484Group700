@@ -42,7 +42,7 @@ class PIDController:
             AckermannDriveStamped,
             queue_size=1,
         )
-        rospy.Subscriber('lane_detection/error', Float32, self.error_callback)
+        rospy.Subscriber('lane_detection/Waypoints', Float32MultiArray, self.error_callback)
 
         # Current error
         self.current_error = 0.0
