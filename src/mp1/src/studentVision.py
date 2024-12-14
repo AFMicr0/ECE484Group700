@@ -26,7 +26,7 @@ class lanenet_detector():
         #self.sub_image = rospy.Subscriber('camera/image_raw', Image, self.img_callback, queue_size=1)
         self.pub_image = rospy.Publisher("lane_detection/annotate", Image, queue_size=1)
         self.pub_bird = rospy.Publisher("lane_detection/birdseye", Image, queue_size=1)
-        self.pub_waypoints = rospy.Publisher('/local_waypoints', Float32MultiArray, queue_size=1)
+        self.pub_waypoints = rospy.Publisher('lane_detection/Waypoints', Float32MultiArray, queue_size=1)
         self.left_line = Line(n=5)
         self.right_line = Line(n=5)
         self.detected = False
@@ -90,7 +90,7 @@ class lanenet_detector():
 
 
 
-    def color_thresh(self, img, thresh=(14, 40)):
+    def color_thresh(self, img, thresh=(19, 35)):
         """
         Convert RGB to HSL and threshold to binary image using S channel
         """
@@ -129,7 +129,7 @@ class lanenet_detector():
         binary_output = np.zeros_like(hue)
         binary_output[
             (hue > thresh[0]) & (hue <= thresh[1]) & 
-            (sat > 90) & (lum > 20)
+            (sat > 100) & (lum > 30)
         ] = 255
         
         return binary_output
@@ -148,16 +148,16 @@ class lanenet_detector():
         ####
         ColorOutput = self.color_thresh(img)
         
-        SobelOutput = self.gradient_thresh(img)
+        #SobelOutput = self.gradient_thresh(img)
         
         ####
 
 
-        binaryImage = np.zeros_like(SobelOutput)
+        binaryImage = np.zeros_like(ColorOutput)
         binaryImage[(ColorOutput==255)] = 1
         # Remove noise from binary image
         binaryImage = morphology.remove_small_objects(binaryImage.astype('bool'),min_size=50,connectivity=2)
-        finalBinaryImage = np.zeros_like(SobelOutput)
+        finalBinaryImage = np.zeros_like(ColorOutput)
         finalBinaryImage[binaryImage ==1] = 255
         return finalBinaryImage
         # Remove noise from binary image
@@ -174,7 +174,7 @@ class lanenet_detector():
         ## TODO
         shape = img.shape
         original_pts = np.float32([[75, 285], [40, 480], [600, 480], [565, 285]])
-        output_pts = np.float32([[-15, -60],[280, 480],[400, 480],[595, -60]])
+        output_pts = np.float32([[-15, -60],[280, 480],[400, 480],[620, -60]])
         M = cv2.getPerspectiveTransform(original_pts,output_pts)
         Minv = cv2.getPerspectiveTransform(output_pts,original_pts)
         warped_img = cv2.warpPerspective(np.float32(img),M,(640, 480),flags=cv2.INTER_LINEAR)
@@ -226,7 +226,7 @@ class lanenet_detector():
         # Real-world scaling factors
         pixels_per_meter_x = 21 / 0.057  # Horizontal scaling factor
         pixels_per_meter_y = 21 / 0.057  # Vertical scaling factor
-
+        # (320/21)*0.057 = 0.868
         # Generate y values (in meters) spaced evenly
         ploty = np.linspace(0, num_points * spacing, num_points) * pixels_per_meter_y  # Convert to pixels
 
@@ -246,7 +246,6 @@ class lanenet_detector():
         Publish generated waypoints to a ROS topic.
         """
         waypoints = self.generate_waypoints(center_fit)
-        print(waypoints)
         
         waypoints_array = np.array(waypoints)
 

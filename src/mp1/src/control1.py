@@ -1,121 +1,130 @@
+#!/usr/bin/env python3
+
+#================================================================
+# File name: gem_gnss_pp_tracker_pid.py                                                                  
+# Description: gnss waypoints tracker using pid and pure pursuit                                                                
+# Author: Hang Cui
+# Email: hangcui3@illinois.edu                                                                     
+# Date created: 08/02/2021                                                                
+# Date last modified: 08/15/2022                                                         
+# Version: 1.0                                                                   
+# Usage: rosrun gem_gnss gem_gnss_pp_tracker.py                                                                      
+# Python version: 3.8                                                             
+#================================================================
+
+
 import rospy
-import math
-from std_msgs.msg import Float32
-from ackermann_msgs.msg import AckermannDriveStamped
+import numpy as np
+from std_msgs.msg import Float32MultiArray
+from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 
-class PIDController:
+class LaneFollowingController:
     def __init__(self):
-        rospy.init_node('pid_controller', anonymous=True)
-        self.rate = rospy.Rate(50)  # 50 Hz control loop
-
-        # PID gains (to be tuned)
-        self.kp = 0.5
-        self.ki = 0.01
-        self.kd = 0.1
-
-        # PID variables
-        self.prev_error = 0.0
-        self.integral = 0.0
-        self.prev_time = None
-
-        # Steering parameters
-        self.max_steering_angle = 0.35  # Max steering angle in radians
-        self.min_steering_angle = -0.35
-
-        # Speed parameters
-        self.default_speed = 0.4  # Default speed in m/s
-        self.recovery_speed = 0.2  # Reduced speed during recovery
-
-        # Lane detection
-        self.lane_detected = False
-        self.correction_counter = 0
-        self.max_correction_steps = 50  # Allow up to 50 iterations of recovery
-
-        # Vehicle control message
+        # ROS publishers and subscribers
+        self.sub_waypoints = rospy.Subscriber('lane_detection/Waypoints', Float32MultiArray, self.waypoints_callback, queue_size=1)
+        self.ctrl_pub  = rospy.Publisher("/vesc/low_level/ackermann_cmd_mux/input/navigation", AckermannDriveStamped, queue_size=1)
         self.drive_msg = AckermannDriveStamped()
         self.drive_msg.header.frame_id = "f1tenth_control"
-        self.drive_msg.drive.speed = self.default_speed
+        # PID controller gains
+        self.kp = 1.0
+        self.ki = 0.0
+        self.kd = 0.1
+        # self.kp = 0.05  # tune
+        # self.ki = 0.01  # tune 
+        # self.kd = 0.1  # tune
 
-        # ROS publishers and subscribers
-        self.drive_pub = rospy.Publisher(
-            "/vesc/low_level/ackermann_cmd_mux/input/navigation",
-            AckermannDriveStamped,
-            queue_size=1,
-        )
-        rospy.Subscriber('lane_detection/Waypoints', Float32MultiArray, self.error_callback)
+        self.rate = rospy.Rate(50)
+        self.drive_msg = AckermannDriveStamped()
+        self.drive_msg.header.frame_id = "f1tenth_control"
 
-        # Current error
-        self.current_error = 0.0
-        self.last_steering_angle = 0.0
+        self.look_ahead = 0.3 # 4
+        self.wheelbase  = 0.325 # meters
+        self.offset     = 0.15 # meters 
 
-    def error_callback(self, msg):
-        """Callback to handle lane detection error."""
-        self.current_error = msg.data
-        if msg.data > 1000:  # Threshold for lane detection loss
-            self.lane_detected = False
-        else:
-            self.lane_detected = True
-            self.correction_counter = 0
+        # Controller state
+        self.integral_error = 0.0
+        self.previous_error = 0.0
+        self.target_speed = 1.5  # Desired speed in m/s
 
-    def compute_steering_angle(self, error, delta_time):
-        """Compute the steering angle using PID control."""
-        self.integral += error * delta_time
-        derivative = (error - self.prev_error) / delta_time
+    def waypoints_callback(self, msg):
+        try:
+            # Reshape the waypoints into (N, 2) format
+            waypoints = np.array(msg.data).reshape(-1, 2)
+            print(waypoints)
 
-        # PID formula
-        steering_angle = (
-            self.kp * error + self.ki * self.integral + self.kd * derivative
-        )
+            # Compute steering angle and throttle
+            steering_angle, speed = self.compute_control(waypoints)
+            print(steering_angle)
+            print(speed)
+        
 
-        # Clamp to max/min steering angle
-        steering_angle = max(
-            self.min_steering_angle, min(self.max_steering_angle, steering_angle)
-        )
+            # Publish the control command
+            self.publish_control(steering_angle, speed)
+        except Exception as e:
+            rospy.logger(f"Error processing waypoints: {e}")
 
-        self.prev_error = error
-        return steering_angle
+    def compute_control(self, waypoints):
+        """
+        Compute the control command based on waypoints.
 
-    def run(self):
-        """Main control loop."""
-        while not rospy.is_shutdown():
-            current_time = rospy.Time.now()
-            if self.prev_time is None:
-                delta_time = 0.0
-            else:
-                delta_time = (current_time - self.prev_time).to_sec()
+        Args:
+            waypoints (np.ndarray): Array of waypoints [[x1, y1], [x2, y2], ...].
 
-            if delta_time == 0:
-                delta_time = 0.0001
+        Returns:
+            float: Steering angle in radians.
+            float: Speed in m/s.
+        """
+        if len(waypoints) < 1:
+        # Not enough waypoints to calculate control
+            return 0.0, 0.0
 
-            if not self.lane_detected:
-                if self.correction_counter < self.max_correction_steps:
-                    # Recovery behavior: reverse last steering angle
-                    steering_angle = -self.last_steering_angle
-                    self.drive_msg.drive.speed = self.recovery_speed
-                    self.correction_counter += 1
-                else:
-                    rospy.logwarn("Lane lost. Stopping the vehicle.")
-                    self.drive_msg.drive.speed = 0.0  # Stop the vehicle
-                    steering_angle = 0.0
-            else:
-                # Normal behavior: Compute PID steering angle
-                steering_angle = self.compute_steering_angle(
-                    self.current_error, delta_time
-                )
-                self.drive_msg.drive.speed = self.default_speed
+        # Desired lateral position of the track center
+        track_center = 0.868571
 
-            # Publish drive message
-            self.last_steering_angle = steering_angle
-            self.drive_msg.header.stamp = current_time
-            self.drive_msg.drive.steering_angle = -steering_angle  # Invert for control
-            self.drive_pub.publish(self.drive_msg)
+        # Compute lateral error between the first waypoint and the track center
+        current_position = waypoints[0][1]  # y-coordinate of the first waypoint
+        error = current_position - track_center
 
-            self.prev_time = current_time
-            self.rate.sleep()
+        # PID control for steering
+        self.integral_error += error
+        derivative_error = error - self.previous_error
+        self.previous_error = error
 
+        steering_angle = (self.kp * error +
+                        self.ki * self.integral_error +
+                        self.kd * derivative_error)
+
+        # Limit steering angle to [-0.4189, 0.4189] radians (roughly ±24 degrees)
+        steering_angle = max(min(steering_angle, 0.4189), -0.4189)
+
+        # Speed control (constant for now)
+        speed = self.target_speed
+
+        return steering_angle, speed
+
+    def publish_control(self, steering_angle, speed):
+        """
+        Publish control commands to the vehicle.
+
+        Args:
+            steering_angle (float): Steering angle in radians.
+            speed (float): Speed in m/s.
+        """
+        # control_msg = AckermannDriveStamped()
+        # control_msg.header.stamp = rospy.Time.now()
+        # control_msg.drive.steering_angle = steering_angle
+        # control_msg.drive.speed = speed
+        # self.pub_control.publish(control_msg)
+        # print(control_msg)
+
+
+        self.drive_msg.header.stamp = rospy.get_rostime()
+        self.drive_msg.drive.steering_angle = steering_angle
+        self.drive_msg.drive.speed = 1.5
+        self.ctrl_pub.publish(self.drive_msg)
+        print(self.drive_msg)
+        
 if __name__ == '__main__':
-    try:
-        controller = PIDController()
-        controller.run()
-    except rospy.ROSInterruptException:
-        pass
+    rospy.init_node('lane_following_controller', anonymous=True)
+    controller = LaneFollowingController()
+    rospy.spin()
